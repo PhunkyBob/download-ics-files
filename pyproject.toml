@@ -1,0 +1,28 @@
+[project]
+name = "download-ics-files"
+version = "0.1.0"
+description = "Télécharge les fichiers mis à disposition sur le portail du Syndic qui utilise le système ICS."
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "bs4>=0.0.2",
+    "httpx>=0.28.1",
+    "python-dotenv>=1.1.1",
+    "questionary>=2.0.0",
+    "tqdm>=4.67.1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+    "pytest-asyncio>=1.4.0",
+    "respx>=0.23.1",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = ["-ra", "--strict-markers"]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
