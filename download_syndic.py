@@ -1,7 +1,9 @@
+import argparse
 import asyncio
 import json
 import os
 import re
+import sys
 from collections import defaultdict
 from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
@@ -1122,8 +1124,70 @@ async def get_token(client: httpx.AsyncClient, property_details: PropertyDetails
     return token
 
 
-async def main() -> None:
+def _validate_since(value: str) -> str:
+    """Type argparse : valide qu'une date est au format YYYY-MM."""
+    if not re.match(r"^\d{4}-\d{2}$", value):
+        raise argparse.ArgumentTypeError(
+            f"Format invalide : {value!r}. Attendu : YYYY-MM (ex: 2024-01)"
+        )
+    return value
+
+
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    """Parse les arguments de la ligne de commande.
+
+    Args:
+        argv: Liste d'arguments à parser (défaut: sys.argv[1:]). Le paramètre
+            est exposé pour faciliter les tests sans manipuler sys.argv.
+    """
+    parser = argparse.ArgumentParser(
+        prog="download_syndic",
+        description=(
+            "Télécharge les fichiers mis à disposition sur le portail du Syndic (ICS). "
+            "Sans option, le script guide l'utilisateur via des menus interactifs."
+        ),
+        # allow_abbrev=False : on veut qu'une typo type `--download` (au lieu de
+        # `--download-all`) soit une erreur, pas un raccourci silencieux.
+        allow_abbrev=False,
+    )
+    parser.add_argument(
+        "--download-all",
+        action="store_true",
+        help=(
+            "Mode non-interactif : "
+            "sélectionne automatiquement toutes les propriétés, "
+            "filtre à partir de la date --since (2000-01 par défaut) "
+            "et lance le téléchargement sans confirmation. "
+            "Aucune question n'est posée."
+        ),
+    )
+    parser.add_argument(
+        "--since",
+        type=_validate_since,
+        default="2000-01",
+        metavar="YYYY-MM",
+        help=(
+            "Date de début pour le filtrage des documents au format YYYY-MM. "
+            "En mode interactif : proposée comme valeur par défaut du prompt. "
+            "En mode --download-all : appliquée directement. "
+            "Défaut : 2000-01."
+        ),
+    )
+    return parser.parse_args(argv)
+
+
+async def main(argv: Sequence[str] = ()) -> None:
+    # Note : on ne lit PAS sys.argv depuis main() — c'est le bloc
+    # `if __name__ == "__main__":` qui passe sys.argv[1:] explicitement.
+    # Cela évite que les args du runner de tests (pytest) soient parsées
+    # par argparse quand main() est appelé depuis la suite de tests.
+    args = parse_args(argv)
+    download_all: bool = args.download_all
+    start_date_default: str = args.since
+
     print("=== EXPLORATEUR SYNDIC ===")
+    if download_all:
+        print("🤖 Mode non-interactif (--download-all) : aucune question ne sera posée")
     print(f"Dossier de téléchargement: {download_folder}")
     print()
 
@@ -1139,16 +1203,30 @@ async def main() -> None:
 
     try:
         properties = session["properties"]
-        selected_props = await select_properties(properties)
+
+        # --- PHASE 2 : SÉLECTION DES PROPRIÉTÉS ---
+        if download_all:
+            selected_props = properties
+            print(f"✅ Mode non-interactif : {len(properties)} propriété(s) sélectionnée(s)")
+        else:
+            selected_props = await select_properties(properties)
 
         if not selected_props:
             return
 
         # --- PHASE 3 : FILTRAGE PAR DATE (une seule fois pour toutes les propriétés) ---
-        start_date = await prompt_start_date()
+        if download_all:
+            start_date = start_date_default
+            print(f"\n📅 Filtrage des documents à partir de : {start_date}")
+        else:
+            start_date = await prompt_start_date(default=start_date_default)
 
         # --- PHASE 4 : CHOIX DE L'ACTION (une seule fois pour toutes les propriétés) ---
-        action = await prompt_action()
+        if download_all:
+            action = "2"  # télécharger
+            print("✅ Action sélectionnée : Télécharger (mode non-interactif)")
+        else:
+            action = await prompt_action()
 
         # --- PHASE 5 : SCAN LOCAL UNIQUE (avant la boucle des propriétés) ---
         # Le scan est partagé entre toutes les propriétés — évite de reparcourir
@@ -1194,7 +1272,10 @@ async def main() -> None:
             if action == "1":
                 display_listing(all_files, existing_files, prop_download_folder)
             else:
-                await run_download(all_files, existing_files, token, prop_download_folder, client, total_existing)
+                await run_download(
+                    all_files, existing_files, token, prop_download_folder,
+                    client, total_existing, auto_confirm=download_all,
+                )
 
     finally:
         await client.aclose()
@@ -1255,7 +1336,7 @@ async def select_properties(properties: list[Property]) -> list[Property]:
     return [selected]
 
 
-async def prompt_start_date() -> str:
+async def prompt_start_date(default: str = "2000-01") -> str:
     """Demande la date de début de filtrage. Défaut : '2000-01'."""
 
     def _validate(val: str) -> bool | str:
@@ -1267,11 +1348,11 @@ async def prompt_start_date() -> str:
 
     result = await _text(
         "Date de début pour le filtrage (YYYY-MM) :",
-        default="2000-01",
+        default=default,
         validate=_validate,
     )
 
-    start_date = result or "2000-01"
+    start_date = result or default
     print(f"\n📅 Filtrage des documents à partir de : {start_date}")
     return start_date
 
@@ -1347,10 +1428,26 @@ async def run_download(
     prop_download_folder: str,
     client: httpx.AsyncClient,
     total_existing: int,
+    auto_confirm: bool = False,
 ) -> None:
-    """Lance le téléchargement des fichiers collectés, après confirmation."""
+    """Lance le téléchargement des fichiers collectés, après confirmation.
+
+    Args:
+        all_files: Liste de tuples (file_info, folder_path) à télécharger.
+        existing_files: Set des chemins déjà présents localement.
+        token: Token d'authentification.
+        prop_download_folder: Dossier local de destination.
+        client: Client HTTP authentifié.
+        total_existing: Nombre de fichiers déjà présents (pour la barre).
+        auto_confirm: Si True, saute la confirmation interactive (mode
+            --download-all). Défaut False.
+    """
     print(f"\n⬇️  Téléchargement dans : {prop_download_folder}")
-    confirmed = await _confirm("Confirmer le téléchargement ?", default=False)
+    if auto_confirm:
+        print("🚀 Mode non-interactif : confirmation automatique")
+        confirmed = True
+    else:
+        confirmed = await _confirm("Confirmer le téléchargement ?", default=False)
 
     if not confirmed:
         print("Téléchargement annulé pour cette propriété.")
@@ -1362,4 +1459,4 @@ async def run_download(
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(main(sys.argv[1:]))

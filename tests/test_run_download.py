@@ -81,3 +81,36 @@ class TestRunDownload:
                 )
         # Le fichier a bien été téléchargé.
         assert "G1" in ds.downloaded_files
+
+    async def test_auto_confirm_true_saute_la_confirmation(
+        self, tmp_path, tmp_env, monkeypatch: pytest.MonkeyPatch, capsys
+    ) -> None:
+        """En mode --download-all (auto_confirm=True), _confirm n'est jamais appelé."""
+        # Ce _confirm planterait le test s'il était appelé : on compte les appels.
+        confirm_calls: list[str] = []
+
+        async def tracking_confirm(message, default=False):
+            confirm_calls.append(message)
+            return False  # même un "non" doit être ignoré
+
+        monkeypatch.setattr(ds, "_confirm", tracking_confirm)
+        ds.enable_thread_bars = False
+        ds.downloaded_files.clear()
+
+        folder = str(tmp_path / "dest")
+        files = [_file_pair("G1", folder=folder)]
+
+        async with httpx.AsyncClient() as client:
+            with respx.mock(base_url="https://extranet2.ics.fr") as mock:
+                mock.get(DOWNLOAD_URL).mock(return_value=httpx.Response(200, content=b"OK"))
+                await ds.run_download(
+                    files, set(), "T", folder, client, total_existing=0,
+                    auto_confirm=True,
+                )
+
+        # _confirm n'a jamais été consulté → le téléchargement est passé outre.
+        assert confirm_calls == []
+        # Le fichier a bien été téléchargé malgré un _confirm "non" potentiel.
+        assert "G1" in ds.downloaded_files
+        # Petit message utilisateur pour signaler le mode.
+        assert "non-interactif" in capsys.readouterr().out.lower()

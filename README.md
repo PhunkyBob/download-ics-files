@@ -44,6 +44,34 @@ Le script guide ensuite l'utilisateur :
    - `1` : lister les fichiers (mode à blanc, recommandé pour un premier passage) ;
    - `2` : télécharger les fichiers (avec confirmation avant lancement).
 
+### Options de la ligne de commande
+
+```cmd
+uv run download_syndic.py [--download-all] [--since YYYY-MM]
+```
+
+- `--download-all` : mode **non-interactif** adapté aux scripts / à la CI.
+  Aucune question n'est posée : toutes les propriétés rattachées au compte sont traitées, le téléchargement est lancé automatiquement, et chaque  téléchargement est confirmé d'office (`yes`).
+  Un message indique en début d'exécution que le mode non-interactif est actif.
+- `--since YYYY-MM` : date de début pour le filtrage des documents.
+  En mode interactif, elle est proposée comme valeur par défaut du prompt (l'utilisateur peut encore modifier). En mode `--download-all`, elle est appliquée telle quelle. Défaut : `2000-01`.
+
+Exemples :
+
+```cmd
+# Mode interactif classique, comportement inchangé
+uv run download_syndic.py
+
+# Mode non-interactif : télécharge tout, sans poser de question
+uv run download_syndic.py --download-all
+
+# Mode non-interactif avec date de filtrage personnalisée
+uv run download_syndic.py --download-all --since 2024-01
+
+# Mode interactif avec une autre date proposée par défaut
+uv run download_syndic.py --since 2024-01
+```
+
 ## Fonctionnement
 
 - Les fichiers sont téléchargés dans le dossier défini par `DOWNLOAD_FOLDER`. Chaque propriété obtient un sous-dossier nommé d'après l'immeuble.

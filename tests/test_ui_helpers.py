@@ -123,6 +123,30 @@ class TestPromptStartDate:
         result = await ds.prompt_start_date()
         assert result == "2000-01"
 
+    async def test_default_personnalise_propage(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Le default du prompt vient du caller (ex: --since 2024-06)."""
+        captured: dict[str, str] = {}
+
+        async def fake_text(message, default="", validate=None):
+            captured["default"] = default
+            return default  # vide → default
+
+        monkeypatch.setattr(ds, "_text", fake_text)
+        result = await ds.prompt_start_date(default="2024-06")
+        # Le default est bien passé à questionary.text et appliqué en sortie.
+        assert captured["default"] == "2024-06"
+        assert result == "2024-06"
+
+    async def test_saisie_utilisateur_ecrase_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Si l'utilisateur saisit une autre valeur que celle proposée, elle est utilisée."""
+
+        async def fake_text(message, default="", validate=None):
+            return "2025-03"  # l'utilisateur a changé
+
+        monkeypatch.setattr(ds, "_text", fake_text)
+        result = await ds.prompt_start_date(default="2024-06")
+        assert result == "2025-03"
+
     def test_validateur_accepte_YYYY_MM(self) -> None:
         # On teste directement la fonction _validate via monkeypatch.
         captured = {}

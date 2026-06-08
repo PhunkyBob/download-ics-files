@@ -142,7 +142,7 @@ class TestMain:
         # (déjà géré en interne : len(properties) == 1).
 
         # prompt_start_date → "2024-01".
-        async def fake_start_date() -> str:
+        async def fake_start_date(default: str = "2000-01") -> str:
             return "2024-01"
 
         monkeypatch.setattr(ds, "prompt_start_date", fake_start_date)
@@ -222,7 +222,7 @@ class TestMain:
         }
         monkeypatch.setattr(ds, "authenticate", lambda: _async_return(fake_session))
 
-        async def fake_start_date() -> str:
+        async def fake_start_date(default: str = "2000-01") -> str:
             return "2024-01"
 
         monkeypatch.setattr(ds, "prompt_start_date", fake_start_date)
@@ -297,7 +297,7 @@ class TestMain:
         }
         monkeypatch.setattr(ds, "authenticate", lambda: _async_return(fake_session))
 
-        async def fake_start_date() -> str:
+        async def fake_start_date(default: str = "2000-01") -> str:
             return "2024-01"
 
         monkeypatch.setattr(ds, "prompt_start_date", fake_start_date)
@@ -344,7 +344,7 @@ class TestMain:
         }
         monkeypatch.setattr(ds, "authenticate", lambda: _async_return(fake_session))
 
-        async def fake_start_date() -> str:
+        async def fake_start_date(default: str = "2000-01") -> str:
             return "2024-01"
 
         monkeypatch.setattr(ds, "prompt_start_date", fake_start_date)
@@ -401,6 +401,166 @@ class TestMain:
         monkeypatch.setattr(ds, "select_properties", fake_select_props)
 
         await ds.main()  # ne doit pas crasher
+        await fake_session["client"].aclose()
+
+
+class TestDownloadAllMode:
+    """Tests du mode non-interactif --download-all.
+
+    Comportements attendus :
+    - Aucune question n'est posée (select_properties / prompt_start_date /
+      prompt_action / _confirm ne sont jamais appelés).
+    - Toutes les propriétés du compte sont traitées.
+    - Le téléchargement part avec auto-confirm.
+    """
+
+    async def test_avec_flag_ne_pose_aucune_question(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path,
+        tmp_env,
+    ) -> None:
+        _setup_env(monkeypatch)
+        ds.download_folder = str(tmp_path / "dl")
+        os.makedirs(ds.download_folder, exist_ok=True)
+        ds.enable_thread_bars = False
+        ds.max_concurrent_downloads = 1
+
+        fake_session = {
+            "phpsessid": "abc",
+            "cabinet_groupe": "GRP",
+            "client": httpx.AsyncClient(),
+            "properties": [
+                {
+                    "url": "https://extranet2.ics.fr/V5/documents-syndic-1-1.html",
+                    "imme": "1", "copro": "1",
+                    "building_name": "Immeuble A", "doc_type": "VOS",
+                    "label": "Immeuble A — VOS",
+                },
+                {
+                    "url": "https://extranet2.ics.fr/V5/documents-syndic-2-2.html",
+                    "imme": "2", "copro": "2",
+                    "building_name": "Immeuble B", "doc_type": "VOS",
+                    "label": "Immeuble B — VOS",
+                },
+            ],
+        }
+        monkeypatch.setattr(ds, "authenticate", lambda: _async_return(fake_session))
+
+        # Ces 4 fonctions NE DOIVENT PAS être appelées en mode --download-all.
+        # On les monkey-patch en compteurs : si l'une est touchée, on le saura.
+        calls: dict[str, int] = {"select_props": 0, "start_date": 0, "action": 0, "confirm": 0}
+
+        async def track_select_props(properties):
+            calls["select_props"] += 1
+            return properties
+
+        async def track_start_date(default: str = "2000-01") -> str:
+            calls["start_date"] += 1
+            return default
+
+        async def track_action() -> str:
+            calls["action"] += 1
+            return "1"
+
+        async def track_confirm(message: str, default: bool = False) -> bool:
+            calls["confirm"] += 1
+            return True
+
+        monkeypatch.setattr(ds, "select_properties", track_select_props)
+        monkeypatch.setattr(ds, "prompt_start_date", track_start_date)
+        monkeypatch.setattr(ds, "prompt_action", track_action)
+        monkeypatch.setattr(ds, "_confirm", track_confirm)
+
+        # Détails / token / vue → stubs minimaux.
+        async def fake_property_details(client, url):
+            return {
+                "cle": "CLE", "ics_login": "x", "ics_pwd": "y",
+                "cabinet": "C", "imme": "1", "copro": "1",
+            }
+
+        async def fake_token(client, details):
+            return "TOK"
+
+        async def fake_entity(client, vos, imm, label=""):
+            return vos, "VOS"
+
+        monkeypatch.setattr(ds, "get_property_details", fake_property_details)
+        monkeypatch.setattr(ds, "get_token", fake_token)
+        monkeypatch.setattr(ds, "get_entity_url_with_fallback", fake_entity)
+
+        with respx.mock(base_url="https://extranet2.ics.fr", assert_all_called=False) as mock:
+            mock.get(__import__("re").compile(r"GetEntityContent")).mock(
+                return_value=httpx.Response(
+                    200,
+                    json=_entity_payload([_file("G1", "a.pdf", "2024-12-01")]),
+                )
+            )
+            mock.get(__import__("re").compile(r"getFileByFTPServlet")).mock(
+                return_value=httpx.Response(200, content=b"PDF")
+            )
+            # --- ACT : on appelle main() avec --download-all ---
+            await ds.main(["--download-all"])
+
+        # Aucune question n'a été posée.
+        assert calls == {
+            "select_props": 0,
+            "start_date": 0,
+            "action": 0,
+            "confirm": 0,
+        }, f"Des fonctions interactives ont été appelées : {calls}"
+        # Le téléchargement a bien eu lieu.
+        assert "G1" in ds.downloaded_files
+        await fake_session["client"].aclose()
+
+    async def test_since_personnalise_via_cli(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path,
+        tmp_env,
+    ) -> None:
+        """--since YYYY-MM est appliqué comme date de filtrage (pas le défaut)."""
+        _setup_env(monkeypatch)
+        ds.download_folder = str(tmp_path / "dl")
+        os.makedirs(ds.download_folder, exist_ok=True)
+        ds.enable_thread_bars = False
+        ds.max_concurrent_downloads = 1
+
+        # On capture la valeur de start_date reçue par prepare_collection
+        # pour vérifier qu'elle vient bien de --since.
+        captured: dict[str, str] = {}
+
+        async def fake_prepare(folder_url, base_folder, start_date, client, existing_files):
+            captured["start_date"] = start_date
+            return ([], existing_files, 0)
+
+        monkeypatch.setattr(ds, "prepare_collection", fake_prepare)
+
+        fake_session = {
+            "phpsessid": "abc",
+            "cabinet_groupe": "GRP",
+            "client": httpx.AsyncClient(),
+            "properties": [{
+                "url": "https://extranet2.ics.fr/V5/documents-syndic-1-1.html",
+                "imme": "1", "copro": "1",
+                "building_name": "A", "doc_type": "VOS", "label": "A",
+            }],
+        }
+        monkeypatch.setattr(ds, "authenticate", lambda: _async_return(fake_session))
+
+        async def fake_property_details(client, url):
+            return {
+                "cle": "C", "ics_login": "x", "ics_pwd": "y",
+                "cabinet": "C", "imme": "1", "copro": "1",
+            }
+        monkeypatch.setattr(ds, "get_property_details", fake_property_details)
+        monkeypatch.setattr(ds, "get_token", lambda c, d: _async_return("T"))
+        monkeypatch.setattr(ds, "get_entity_url_with_fallback", lambda c, v, i, label="": _async_return((v, "VOS")))
+
+        with respx.mock(base_url="https://extranet2.ics.fr", assert_all_called=False):
+            await ds.main(["--download-all", "--since", "2023-06"])
+
+        assert captured["start_date"] == "2023-06"
         await fake_session["client"].aclose()
 
 
