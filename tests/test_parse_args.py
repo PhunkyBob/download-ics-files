@@ -67,3 +67,36 @@ class TestParseArgs:
         captured = capsys.readouterr()
         assert "--download-all" in captured.out
         assert "--since" in captured.out
+
+    def test_sans_args_defaults_none(self) -> None:
+        """Sans flag cookie : args.phpsessid et args.cabinet_groupe sont None."""
+        args = ds.parse_args([])
+        assert args.phpsessid is None
+        assert args.cabinet_groupe is None
+
+    def test_phpsessid_cli(self) -> None:
+        """--phpsessid X : la valeur est exposée sur args."""
+        args = ds.parse_args(["--phpsessid", "abc123def"])
+        assert args.phpsessid == "abc123def"
+        assert args.cabinet_groupe is None
+
+    def test_cabinet_groupe_cli(self) -> None:
+        """--cabinet-groupe Y : la valeur est exposée sur args."""
+        args = ds.parse_args(["--cabinet-groupe", "GRP42"])
+        assert args.cabinet_groupe == "GRP42"
+        assert args.phpsessid is None
+
+    def test_cookies_cli_combines(self) -> None:
+        """Les deux flags cookie sont combinables avec les autres."""
+        args = ds.parse_args(
+            [
+                "--download-all",
+                "--since", "2024-06",
+                "--phpsessid", "abc",
+                "--cabinet-groupe", "GRP",
+            ]
+        )
+        assert args.download_all is True
+        assert args.since == "2024-06"
+        assert args.phpsessid == "abc"
+        assert args.cabinet_groupe == "GRP"

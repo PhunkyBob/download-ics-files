@@ -136,7 +136,11 @@ class TestMain:
                 }
             ],
         }
-        monkeypatch.setattr(ds, "authenticate", lambda: _async_return(fake_session))
+        monkeypatch.setattr(
+            ds,
+            "authenticate",
+            lambda cli_phpsessid=None, cli_cabinet_groupe=None: _async_return(fake_session),
+        )
 
         # select_properties → la seule propriété est retournée directement.
         # (déjà géré en interne : len(properties) == 1).
@@ -220,7 +224,11 @@ class TestMain:
                 }
             ],
         }
-        monkeypatch.setattr(ds, "authenticate", lambda: _async_return(fake_session))
+        monkeypatch.setattr(
+            ds,
+            "authenticate",
+            lambda cli_phpsessid=None, cli_cabinet_groupe=None: _async_return(fake_session),
+        )
 
         async def fake_start_date(default: str = "2000-01") -> str:
             return "2024-01"
@@ -295,7 +303,11 @@ class TestMain:
                 }
             ],
         }
-        monkeypatch.setattr(ds, "authenticate", lambda: _async_return(fake_session))
+        monkeypatch.setattr(
+            ds,
+            "authenticate",
+            lambda cli_phpsessid=None, cli_cabinet_groupe=None: _async_return(fake_session),
+        )
 
         async def fake_start_date(default: str = "2000-01") -> str:
             return "2024-01"
@@ -342,7 +354,11 @@ class TestMain:
                 }
             ],
         }
-        monkeypatch.setattr(ds, "authenticate", lambda: _async_return(fake_session))
+        monkeypatch.setattr(
+            ds,
+            "authenticate",
+            lambda cli_phpsessid=None, cli_cabinet_groupe=None: _async_return(fake_session),
+        )
 
         async def fake_start_date(default: str = "2000-01") -> str:
             return "2024-01"
@@ -393,7 +409,11 @@ class TestMain:
                 "building_name": "B", "doc_type": "V", "label": "B",
             }],
         }
-        monkeypatch.setattr(ds, "authenticate", lambda: _async_return(fake_session))
+        monkeypatch.setattr(
+            ds,
+            "authenticate",
+            lambda cli_phpsessid=None, cli_cabinet_groupe=None: _async_return(fake_session),
+        )
 
         async def fake_select_props(properties):
             return []  # aucune sélection
@@ -445,7 +465,11 @@ class TestDownloadAllMode:
                 },
             ],
         }
-        monkeypatch.setattr(ds, "authenticate", lambda: _async_return(fake_session))
+        monkeypatch.setattr(
+            ds,
+            "authenticate",
+            lambda cli_phpsessid=None, cli_cabinet_groupe=None: _async_return(fake_session),
+        )
 
         # Ces 4 fonctions NE DOIVENT PAS être appelées en mode --download-all.
         # On les monkey-patch en compteurs : si l'une est touchée, on le saura.
@@ -546,7 +570,11 @@ class TestDownloadAllMode:
                 "building_name": "A", "doc_type": "VOS", "label": "A",
             }],
         }
-        monkeypatch.setattr(ds, "authenticate", lambda: _async_return(fake_session))
+        monkeypatch.setattr(
+            ds,
+            "authenticate",
+            lambda cli_phpsessid=None, cli_cabinet_groupe=None: _async_return(fake_session),
+        )
 
         async def fake_property_details(client, url):
             return {

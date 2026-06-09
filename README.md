@@ -55,6 +55,8 @@ uv run download_syndic.py [--download-all] [--since YYYY-MM]
   Un message indique en début d'exécution que le mode non-interactif est actif.
 - `--since YYYY-MM` : date de début pour le filtrage des documents.
   En mode interactif, elle est proposée comme valeur par défaut du prompt (l'utilisateur peut encore modifier). En mode `--download-all`, elle est appliquée telle quelle. Défaut : `2000-01`.
+- `--phpsessid ID` : override la valeur `PHPSESSID` du `.env` et active l'**authentification par cookies** (skip le formulaire de login). Le cookie manquant peut être complété depuis `.env` si besoin. À combiner avec `--cabinet-groupe` ou avec `PHPSESSID+CABINET_GROUPE` dans `.env`.
+- `--cabinet-groupe VAL` : override la valeur `CABINET_GROUPE` du `.env`. À combiner avec `--phpsessid` (ou avec `PHPSESSID+CABINET_GROUPE` dans `.env`) pour activer le mode cookie.
 
 Exemples :
 
@@ -70,6 +72,39 @@ uv run download_syndic.py --download-all --since 2024-01
 
 # Mode interactif avec une autre date proposée par défaut
 uv run download_syndic.py --since 2024-01
+```
+
+## Authentification par cookies (mode captcha)
+
+Quand le portail pose un **captcha** sur le formulaire de login, le `POST login_externe` échoue et le mode standard est inutilisable. Le script supporte alors un mode d'**authentification par cookies** : on injecte directement `PHPSESSID` et `CABINET_GROUPE` (les deux cookies qui valident la session côté serveur) dans le client HTTP, ce qui permet d'interroger l'API sans jamais toucher au formulaire.
+
+**Règle de priorité** (première méthode applicable gagne) :
+
+1. `--phpsessid` / `--cabinet-groupe` passés en CLI
+2. `LOGIN_URL` + `LOGIN` + `PASSWORD` dans `.env` (méthode standard)
+3. `PHPSESSID` + `CABINET_GROUPE` dans `.env` (fallback captcha)
+
+Les valeurs CLI fusionnent avec `.env` : par exemple, `--phpsessid NOUVEAU` sans `--cabinet-groupe` utilise `CABINET_GROUPE` depuis `.env`.
+
+### Comment récupérer les cookies
+
+1. Ouvrir le portail dans un navigateur (Chrome / Firefox) et se connecter normalement (en résolvant le captcha à la main).
+2. Ouvrir les **Outils de développement** → onglet **Application** (Chrome) ou **Storage** (Firefox) → section **Cookies** → site `extranet2.ics.fr`.
+3. Copier les valeurs de `PHPSESSID` et `CABINET_GROUPE`.
+
+⚠️ **Limitations** : un `PHPSESSID` expire généralement après 30 min d'inactivité et peut être lié à votre IP. Si vous obtenez une erreur "Session invalide", il suffit de répéter l'étape 1 pour récupérer un cookie frais.
+
+### Exemples
+
+```cmd
+# Cookies dans .env (méthode "je copie une fois pour toutes") :
+#   PHPSESSID = 5419gen0a75gfpkvfg288hk80g
+#   CABINET_GROUPE = cdg
+# Puis lancer normalement (sans flag) — login/mdp ne sont pas requis.
+uv run download_syndic.py --since 2024-01
+
+# Override ponctuel en CLI (utile quand le PHPSESSID expire souvent) :
+uv run download_syndic.py --phpsessid NOUVEAU_PHP --cabinet-groupe cabgrp --since 2024-01
 ```
 
 ## Fonctionnement

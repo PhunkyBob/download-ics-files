@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+import contextlib
 import json
 import os
 import re
@@ -88,7 +89,7 @@ def build_search_url(token: str, folder_id: int | str, page: int = 1) -> str:
         "resultNumber": "10",
         "sortName": "DESCENDING_DATE",
         "toJson": "true",
-        "token": str(token),
+        "token": token,
     }
     query = urlencode(params)
     return f"https://extranet2.ics.fr/webservice/gedservice/SearchArborescenceContentServlet?{query}"
@@ -110,9 +111,8 @@ def build_ged_url(servlet: str, token: str, **params: Any) -> str:
         "resultNumber": "10",
         "sortName": "DESCENDING_DATE",
         "toJson": "true",
-        "token": str(token),
-    }
-    base.update({k: str(v) for k, v in params.items() if v is not None})
+        "token": token,
+    } | {k: str(v) for k, v in params.items() if v is not None}
     return f"https://extranet2.ics.fr/webservice/gedservice/{servlet}?{urlencode(base)}"
 
 
@@ -136,15 +136,19 @@ def build_entity_url(
         use_copro_filter: True pour ajouter le filtre subType/subTypeId
             (vue "VOS DOCUMENTS"), False pour l'omettre (vue "DOCUMENTS DE L'IMMEUBLE")
     """
-    extra: dict[str, str] = {"subType": "COPROPRIETAIRE", "subTypeId": str(copro)} if use_copro_filter else {}
+    extra: dict[str, str] = (
+        {"subType": "COPROPRIETAIRE", "subTypeId": copro}
+        if use_copro_filter
+        else {}
+    )
     return build_ged_url(
         "GetEntityContentServlet",
         token,
-        id=str(imme),
+        id=imme,
         isPermissionFilterEnabled="true",
         type="Immeuble",
         page=str(page),
-        **extra,
+        **extra
     )
 
 
@@ -183,7 +187,7 @@ def construct_file_name(file_info: FileInfo) -> str:
 
 
 def _truncate(s: str, n: int) -> str:
-    return s if len(s) <= n else s[: n - 3] + "..."
+    return s if len(s) <= n else f"{s[:n - 3]}..."
 
 
 def _empty_folder_content() -> dict[str, Any]:
@@ -208,15 +212,14 @@ async def request_with_retry(
             return await client.request(method, url, **kwargs)
         except (httpx.ReadTimeout, httpx.ConnectTimeout, httpx.PoolTimeout) as e:
             last_exception = e
+            tag = label or url[:80]
             if attempt < HTTP_MAX_RETRIES - 1:
                 wait = 2 ** (attempt + 1)
-                tag = label or url[:80]
                 print(f"⏳ Timeout sur {tag}... (tentative {attempt+1}/{HTTP_MAX_RETRIES}), retry dans {wait}s")
                 await asyncio.sleep(wait)
             else:
-                tag = label or url[:80]
                 print(f"❌ Timeout définitif après {HTTP_MAX_RETRIES} tentatives pour {tag}...")
-                raise last_exception
+                raise last_exception from last_exception
     raise RuntimeError("unreachable")  # pragma: no cover
 
 
@@ -268,11 +271,9 @@ def _extract_file_info(doc: dict[str, Any]) -> FileInfo:
 def _update_thread_bar(thread_id: int | None, message: str) -> None:
     if not enable_thread_bars or thread_id is None or thread_id not in thread_progress_bars:
         return
-    try:
+    with contextlib.suppress(Exception):
         thread_progress_bars[thread_id].bar_format = message
         thread_progress_bars[thread_id].refresh()
-    except Exception:
-        pass
 
 
 def build_subfolder_url(parent_url: str, folder_id: str, page: int = 1, preserve_path: bool = False) -> str:
@@ -296,7 +297,7 @@ def build_subfolder_url(parent_url: str, folder_id: str, page: int = 1, preserve
         # Pagination (ou fallback token manquant) : on hérite du path/params
         # du parent, on change juste l'id et la page.
         new_params = dict(params)
-        new_params["id"] = [str(folder_id)]
+        new_params["id"] = [folder_id]
         new_params["page"] = [str(page)]
         return urlunparse(
             (
@@ -314,9 +315,9 @@ def build_subfolder_url(parent_url: str, folder_id: str, page: int = 1, preserve
     return build_ged_url(
         "SearchArborescenceContentServlet",
         token,
-        id=str(folder_id),
+        id=folder_id,
         page=str(page),
-        **extra,
+        **extra
     )
 
 
@@ -394,25 +395,22 @@ async def get_folder_content(folder_url: str, client: httpx.AsyncClient) -> dict
         payload = data.get("payload", {})
 
         sons = payload.get("sons", [])
-        for son in sons:
-            if son.get("type") == "DOSSIER":
-                folders.append(
-                    {
-                        "id": son.get("idArbo"),
-                        "nom": son.get("nom"),
-                        "nomGed": son.get("nomGed"),
-                        "chemin": son.get("chemin"),
-                        "cheminComplet": son.get("cheminComplet"),
-                        "documentsCount": son.get("documentsCount", 0),
-                        "foldersCount": son.get("foldersCount", 0),
-                        "droits": son.get("droits"),
-                    }
-                )
-
+        folders.extend(
+            {
+                "id": son.get("idArbo"),
+                "nom": son.get("nom"),
+                "nomGed": son.get("nomGed"),
+                "chemin": son.get("chemin"),
+                "cheminComplet": son.get("cheminComplet"),
+                "documentsCount": son.get("documentsCount", 0),
+                "foldersCount": son.get("foldersCount", 0),
+                "droits": son.get("droits"),
+            }
+            for son in sons
+            if son.get("type") == "DOSSIER"
+        )
         docs = payload.get("docs", [])
-        for doc in docs:
-            all_files.append(_extract_file_info(doc))
-
+        all_files.extend(_extract_file_info(doc) for doc in docs)
         directory_info: DirectoryInfo = payload.get("directory", {})
 
         # Continue tant que le nombre de documents retournés égale resultNumber
@@ -420,7 +418,7 @@ async def get_folder_content(folder_url: str, client: httpx.AsyncClient) -> dict
         documents_on_current_page = len(docs)
 
         # Garde une trace des GUIDs déjà vus pour détecter les doublons
-        seen_guids: set[str] = set(doc.get("guid") for doc in docs if doc.get("guid"))
+        seen_guids: set[str] = {doc.get("guid") for doc in docs if doc.get("guid")}
 
         while documents_on_current_page == result_number:
             current_page += 1
@@ -438,7 +436,7 @@ async def get_folder_content(folder_url: str, client: httpx.AsyncClient) -> dict
                         documents_on_current_page = len(page_docs)
 
                         # Vérifie si on a des doublons (même contenu que les pages précédentes)
-                        page_guids = set(doc.get("guid") for doc in page_docs if doc.get("guid"))
+                        page_guids = {doc.get("guid") for doc in page_docs if doc.get("guid")}
 
                         # Si tous les GUIDs de cette page ont déjà été vus, on arrête
                         if page_guids and page_guids.issubset(seen_guids):
@@ -446,8 +444,7 @@ async def get_folder_content(folder_url: str, client: httpx.AsyncClient) -> dict
 
                         seen_guids.update(page_guids)
 
-                        for doc in page_docs:
-                            all_files.append(_extract_file_info(doc))
+                        all_files.extend(_extract_file_info(doc) for doc in page_docs)
                     else:
                         print(f"Erreur page {current_page}: {page_data.get('msg', 'Erreur inconnue')}")
                         break
@@ -562,26 +559,26 @@ def get_full_server_path(directory_info: dict[str, Any]) -> str:
     Args:
         directory_info: Informations du dossier depuis l'API
     """
-    # Utilise cheminComplet en priorité, sinon chemin
-    full_path = directory_info.get("cheminComplet", directory_info.get("chemin", ""))
+    if not (
+        full_path := directory_info.get(
+            "cheminComplet", directory_info.get("chemin", "")
+        )
+    ):
+        return ""
+    # Retire le préfixe /u/clients/clesev/ges_oullins_ged/ s'il existe
+    if full_path.startswith("/u/clients/clesev/ges_oullins_ged/"):
+        full_path = full_path[len("/u/clients/clesev/ges_oullins_ged/") :]
 
-    if full_path:
-        # Retire le préfixe /u/clients/clesev/ges_oullins_ged/ s'il existe
-        if full_path.startswith("/u/clients/clesev/ges_oullins_ged/"):
-            full_path = full_path[len("/u/clients/clesev/ges_oullins_ged/") :]
+    if full_path.startswith("/"):
+        full_path = full_path[1:]
 
-        if full_path.startswith("/"):
-            full_path = full_path[1:]
+    full_path = full_path.replace("/", os.sep)
 
-        full_path = full_path.replace("/", os.sep)
+    # Nettoie chaque partie du chemin en utilisant les noms d'affichage
+    path_parts = full_path.split(os.sep)
+    cleaned_parts = [clean_file_name(part) for part in path_parts if part]
 
-        # Nettoie chaque partie du chemin en utilisant les noms d'affichage
-        path_parts = full_path.split(os.sep)
-        cleaned_parts = [clean_file_name(part) for part in path_parts if part]
-
-        return os.path.join(*cleaned_parts) if cleaned_parts else ""
-
-    return ""
+    return os.path.join(*cleaned_parts) if cleaned_parts else ""
 
 
 async def collect_all_files_recursive(
@@ -789,7 +786,7 @@ def filter_files_by_date(files_list: list[FilePair], start_date: str) -> list[Fi
         start_date: Date de début au format YYYY-MM
     """
     # On ajoute "-01" pour avoir YYYY-MM-01 (comparaison lexicographique)
-    start_date_normalized = start_date + "-01"
+    start_date_normalized = f"{start_date}-01"
     filtered: list[FilePair] = []
     for file_info, folder_path in files_list:
         date_created = file_info.get("dateCreated", "")
@@ -841,7 +838,7 @@ async def prepare_collection(
         # Recalcule total_existing sur la liste filtrée : des fichiers existants
         # peuvent être écartés par le filtre date, ce qui ferait dériver la
         # barre de progression si on gardait l'ancien compteur.
-        total_existing = sum(1 for fi, _ in all_files if not fi.get("_is_new", True))
+        total_existing = sum(not fi.get("_is_new", True) for fi, _ in all_files)
         print(
             f"📅 Filtrage par date >= {start_date}: {before_count} → {len(all_files)} fichiers ({before_count - len(all_files)} exclus)"
         )
@@ -861,27 +858,212 @@ class AuthSession(TypedDict):
     properties: list[Property]
 
 
-async def authenticate() -> AuthSession | None:
+# Cookies de session — émis/acceptés uniquement sur le portail extranet2.ics.fr.
+# On fixe le domaine explicitement pour éviter le piège du "host-only cookie"
+# qui ne serait pas envoyé à un sous-domaine éventuel.
+_AUTH_DOMAIN = "extranet2.ics.fr"
+
+
+def _parse_documents_html(html: str) -> list[Property]:
     """
-    Authentification automatique via le formulaire de login.
-    Récupère PHPSESSID et CABINET_GROUPE, puis liste les propriétés disponibles.
+    Parse le HTML de `documents.html` pour extraire la liste des propriétés
+    accessibles à l'utilisateur courant.
+
+    Chaque propriété est un dict (url, imme, copro, building_name, doc_type,
+    label). Les doublons (même couple imme/copro) sont dédupliqués.
+
+    Args:
+        html: Contenu HTML brut de la page documents.html.
 
     Returns:
-        dict: {
-            "phpsessid": str,
-            "cabinet_groupe": str,
-            "client": httpx.AsyncClient (ouvert, à fermer par l'appelant),
-            "properties": [{"url": str, "imme": str, "copro": str, "label": str}, ...]
-        }
-        ou None si échec.
+        Liste de propriétés (peut être vide si l'utilisateur n'a accès à
+        aucun immeuble).
+    """
+    docs_soup = bs4.BeautifulSoup(html, "html.parser")
+
+    properties: list[Property] = []
+    seen: set[str] = set()
+
+    # Structure : chaque <p class="main-text"> est dans un row avec les liens documents-syndic
+    for main_text in docs_soup.find_all("p", class_="main-text"):
+        building_name = re.sub(r"\s+", " ", main_text.get_text(strip=True))
+
+        # Remonte au row parent qui contient aussi les liens documents-syndic
+        parent_row = main_text.find_parent("div", class_="row")
+        if not parent_row:
+            continue
+
+        for a in parent_row.find_all("a", href=re.compile(r"documents-syndic")):
+            link = str(a.get("href", ""))
+            if not link:
+                continue
+            if match := re.match(r"documents-syndic-(.+)-(.+)\.html", link):
+                imme = match[1]
+                copro = match[2]
+                key = f"{imme}=={copro}"
+                if key not in seen:
+                    seen.add(key)
+                    full_url = f"https://extranet2.ics.fr/V5/{link}"
+                    doc_type = a.get_text(strip=True)
+                    label = f"{building_name} — {doc_type}"
+                    properties.append(
+                        {
+                            "url": full_url,
+                            "imme": imme,
+                            "copro": copro,
+                            "building_name": building_name,
+                            "doc_type": doc_type,
+                            "label": label,
+                        }
+                    )
+
+    return properties
+
+
+# Type de retour de _resolve_auth_inputs : (kind, value1, value2)
+#   - ("cli_cookies",   phpsessid, cabinet_groupe)
+#   - ("login",         login,     password)
+#   - ("env_cookies",   phpsessid, cabinet_groupe)
+#   - ("error",         reason,    None)
+# On utilise un tuple plat pour éviter d'introduire un NamedTuple juste pour ça.
+AuthInputs: TypeAlias = tuple[str, str, str | None]
+
+
+def _resolve_auth_inputs(cli_phpsessid: str | None, cli_cabinet_groupe: str | None) -> AuthInputs:
+    """
+    Implémente la règle de priorité : `CLI cookies > .env login > .env cookies`.
+
+    Règles détaillées (cf. plan d'implémentation) :
+      1. Si au moins un des flags CLI est passé → on tente le mode cookie.
+         Chaque cookie = valeur CLI si fournie, sinon valeur .env.
+         Si l'un manque après merge → ("error", "partial_cli_cookies", None).
+      2. Sinon, si LOGIN_URL + LOGIN + PASSWORD sont dans .env → login.
+         Si l'un manque (notamment LOGIN_URL absent) → on tombe à l'étape 3.
+      3. Sinon, si PHPSESSID + CABINET_GROUPE sont dans .env → cookies .env.
+         Si l'un manque → ("error", "partial_env_cookies", None).
+      4. Sinon → ("error", "no_method", None).
+    """
+    env_p = os.getenv("PHPSESSID", "").strip()
+    env_c = os.getenv("CABINET_GROUPE", "").strip()
+    cli_p = (cli_phpsessid or "").strip()
+    cli_c = (cli_cabinet_groupe or "").strip()
+
+    # Étape 1 : CLI cookies — déclenché dès qu'AU MOINS UN flag est passé.
+    if cli_p or cli_c:
+        merged_p = cli_p or env_p
+        merged_c = cli_c or env_c
+        if merged_p and merged_c:
+            return "cli_cookies", merged_p, merged_c
+        return "error", "partial_cli_cookies", None
+
+    # Étape 2 : Login .env — requiert les 3 vars (LOGIN_URL aussi).
+    # Si LOGIN_URL manque (typique : le user veut bypasser le login), on tombe
+    # à l'étape 3.
+    login = os.getenv("LOGIN", "").strip()
+    pwd = os.getenv("PASSWORD", "").strip()
+    login_url = os.getenv("LOGIN_URL", "").strip()
+    if login and pwd and login_url:
+        return "login", login, pwd
+
+    # Étape 3 : Cookies .env (fallback captcha, ou si LOGIN_URL absent).
+    if env_p and env_c:
+        return "env_cookies", env_p, env_c
+    if env_p or env_c:
+        return "error", "partial_env_cookies", None
+
+    # Étape 4 : Rien.
+    return "error", "no_method", None
+
+
+def _print_auth_error(reason: str) -> None:
+    """Affiche un message d'erreur explicite selon la raison d'échec d'auth."""
+    if reason == "partial_cli_cookies":
+        print("❌ --phpsessid ou --cabinet-groupe est incomplet : les deux flags sont requis")
+        print("   (ou alors la valeur manquante doit être dans .env)")
+    elif reason == "partial_env_cookies":
+        print("❌ PHPSESSID et CABINET_GROUPE doivent être tous deux définis dans .env")
+    elif reason == "no_method":
+        print("❌ Aucune méthode d'authentification configurée.")
+        print("   → Soit LOGIN_URL + LOGIN + PASSWORD dans .env (méthode standard)")
+        print("   → Soit PHPSESSID + CABINET_GROUPE dans .env (fallback captcha)")
+        print("   → Soit --phpsessid + --cabinet-groupe en CLI (override ponctuel)")
+    else:
+        print(f"❌ Erreur d'authentification : {reason}")
+
+
+async def _authenticate_with_cookies(
+    phpsessid: str,
+    cabinet_groupe: str,
+    source: str,
+) -> AuthSession | None:
+    """
+    Authentification par injection de cookies dans un client HTTP neuf.
+
+    Court-circuite le formulaire de login : on injecte directement PHPSESSID +
+    CABINET_GROUPE dans le client, puis on tape documents.html. Si la session
+    est encore valide côté serveur, on récupère les propriétés. Sinon (PHPSESSID
+    expiré, IP différente, cookie révoqué…), le serveur redirige vers la page
+    de login et on détecte ça via l'URL finale.
+
+    Args:
+        phpsessid: Valeur du cookie PHPSESSID.
+        cabinet_groupe: Valeur du cookie CABINET_GROUPE.
+        source: Label pour les logs ("CLI" ou ".env").
+
+    Returns:
+        AuthSession (client ouvert) ou None si la session est invalide.
+    """
+    print(f"🍪 Authentification par cookies (PHPSESSID={phpsessid[:8]}..., source={source})")
+
+    # follow_redirects=True : si la session est morte, le serveur renvoie une
+    # 302 vers la page de login. On veut suivre pour pouvoir détecter l'URL
+    # finale dans `docs_resp.url` (sinon on aurait status_code=302 et on ne
+    # saurait pas si c'est une vraie 302 légitime ou un échec d'auth).
+    client = httpx.AsyncClient(timeout=HTTP_TIMEOUT, follow_redirects=True)
+    client.cookies.set("PHPSESSID", phpsessid, domain=_AUTH_DOMAIN, path="/")
+    client.cookies.set("CABINET_GROUPE", cabinet_groupe, domain=_AUTH_DOMAIN, path="/")
+
+    print("🌐 Récupération de la liste des propriétés...")
+    docs_resp = await client.get("https://extranet2.ics.fr/V5/documents.html")
+
+    # Détection de redirection vers la page de login (session invalide).
+    final_url = str(docs_resp.url)
+    if "connexion-cdg" in final_url or "login_externe" in final_url:
+        print(f"❌ Session invalide — redirigé vers {final_url}")
+        print("   Le PHPSESSID a peut-être expiré ou été révoqué. Relance avec un cookie frais.")
+        await client.aclose()
+        return None
+
+    if docs_resp.status_code != 200:
+        print(f"❌ Impossible d'accéder à la page documents (HTTP {docs_resp.status_code})")
+        await client.aclose()
+        return None
+
+    properties = _parse_documents_html(docs_resp.text)
+
+    print(f"✅ {len(properties)} propriété(s) trouvée(s)")
+    for i, prop in enumerate(properties, 1):
+        print(f"   {i}. {prop['label']}")
+
+    return {
+        "phpsessid": phpsessid,
+        "cabinet_groupe": cabinet_groupe,
+        "client": client,  # Client ouvert — l'appelant doit le fermer
+        "properties": properties,
+    }
+
+
+async def _authenticate_with_login(login: str, password: str) -> AuthSession | None:
+    """
+    Ancien flux d'authentification par POST sur `login_externe`.
+
+    Récupère PHPSESSID et CABINET_GROUPE côté serveur (via le redirect
+    initialisation.html), puis liste les propriétés.
+
+    Returns:
+        AuthSession (client ouvert) ou None si échec.
     """
     login_url = os.getenv("LOGIN_URL", "")
-    login = os.getenv("LOGIN", "")
-    password = os.getenv("PASSWORD", "")
-
-    if not login_url or not login or not password:
-        print("❌ LOGIN_URL, LOGIN et PASSWORD doivent être configurés dans le fichier .env")
-        return None
 
     # Étape 1 : Récupérer la page de login pour extraire le formulaire (client temporaire)
     print(f"🌐 Chargement de la page de login : {login_url}")
@@ -925,13 +1107,14 @@ async def authenticate() -> AuthSession | None:
         await client.aclose()
         return None
 
-    # Étape 3 : Extraire PHPSESSID
-    phpsessid = ""
-    for cookie_name, cookie_value in resp.cookies.items():
-        if cookie_name == "PHPSESSID":
-            phpsessid = cookie_value
-            break
-
+    phpsessid = next(
+        (
+            cookie_value
+            for cookie_name, cookie_value in resp.cookies.items()
+            if cookie_name == "PHPSESSID"
+        ),
+        "",
+    )
     if not phpsessid:
         print("❌ Impossible d'extraire le PHPSESSID de la réponse de login")
         await client.aclose()
@@ -952,12 +1135,9 @@ async def authenticate() -> AuthSession | None:
     print("🌐 Initialisation de la session...")
     await client.get(redirect_url, follow_redirects=True)
 
-    cabinet_groupe = ""
-    for c in client.cookies.jar:
-        if c.name == "CABINET_GROUPE":
-            cabinet_groupe = c.value
-            break
-
+    cabinet_groupe = next(
+        (c.value for c in client.cookies.jar if c.name == "CABINET_GROUPE"), ""
+    )
     if not cabinet_groupe:
         print("⚠️  CABINET_GROUPE non trouvé dans les cookies")
         cabinet_groupe = ""
@@ -973,44 +1153,7 @@ async def authenticate() -> AuthSession | None:
         await client.aclose()
         return None
 
-    # Structure : chaque <p class="main-text"> est dans un row avec les liens documents-syndic
-    docs_soup = bs4.BeautifulSoup(docs_resp.text, "html.parser")
-
-    properties: list[Property] = []
-    seen: set[str] = set()
-
-    for main_text in docs_soup.find_all("p", class_="main-text"):
-        building_name = re.sub(r"\s+", " ", main_text.get_text(strip=True))
-
-        # Remonte au row parent qui contient aussi les liens documents-syndic
-        parent_row = main_text.find_parent("div", class_="row")
-        if not parent_row:
-            continue
-
-        for a in parent_row.find_all("a", href=re.compile(r"documents-syndic")):
-            link = str(a.get("href", ""))
-            if not link:
-                continue
-            match = re.match(r"documents-syndic-(.+)-(.+)\.html", link)
-            if match:
-                imme = match.group(1)
-                copro = match.group(2)
-                key = f"{imme}=={copro}"
-                if key not in seen:
-                    seen.add(key)
-                    full_url = f"https://extranet2.ics.fr/V5/{link}"
-                    doc_type = a.get_text(strip=True)
-                    label = f"{building_name} — {doc_type}"
-                    properties.append(
-                        {
-                            "url": full_url,
-                            "imme": imme,
-                            "copro": copro,
-                            "building_name": building_name,
-                            "doc_type": doc_type,
-                            "label": label,
-                        }
-                    )
+    properties = _parse_documents_html(docs_resp.text)
 
     print(f"✅ {len(properties)} propriété(s) trouvée(s)")
     for i, prop in enumerate(properties, 1):
@@ -1022,6 +1165,50 @@ async def authenticate() -> AuthSession | None:
         "client": client,  # Client ouvert — l'appelant doit le fermer
         "properties": properties,
     }
+
+
+async def authenticate(
+    cli_phpsessid: str | None = None,
+    cli_cabinet_groupe: str | None = None,
+) -> AuthSession | None:
+    """
+    Authentification au portail syndic via l'une des trois méthodes possibles,
+    dans l'ordre de priorité :
+      1. Cookies injectés (CLI override ou .env) — utile quand le login est
+         bloqué par un captcha.
+      2. Login/mot de passe (POST login_externe) — méthode standard.
+      3. Cookies via .env — utilisé quand LOGIN_URL/LOGIN/PASSWORD sont
+         absents du .env.
+
+    Les flags CLI (`--phpsessid`, `--cabinet-groupe`) fusionnent avec les
+    valeurs du .env : CLI a priorité, mais on complète avec .env si un seul
+    des deux est fourni en CLI.
+
+    Args:
+        cli_phpsessid: Valeur PHPSESSID passée en CLI (None si absent).
+        cli_cabinet_groupe: Valeur CABINET_GROUPE passée en CLI (None si absent).
+
+    Returns:
+        AuthSession (client HTTP ouvert, à fermer par l'appelant) ou None
+        si aucune méthode n'a pu aboutir.
+    """
+    inputs = _resolve_auth_inputs(cli_phpsessid, cli_cabinet_groupe)
+    kind, v1, v2 = inputs
+
+    if kind == "error":
+        _print_auth_error(v1)
+        return None
+
+    if kind == "cli_cookies":
+        assert v2 is not None  # pour le type-checker
+        return await _authenticate_with_cookies(v1, v2, source="CLI")
+
+    if kind == "env_cookies":
+        assert v2 is not None
+        return await _authenticate_with_cookies(v1, v2, source=".env")
+
+    # kind == "login"
+    return await _authenticate_with_login(v1, cast(str, v2))
 
 
 async def get_property_details(client: httpx.AsyncClient, property_url: str) -> PropertyDetails | None:
@@ -1173,6 +1360,29 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
             "Défaut : 2000-01."
         ),
     )
+    parser.add_argument(
+        "--phpsessid",
+        type=str,
+        default=None,
+        metavar="ID",
+        help=(
+            "Override la valeur PHPSESSID du .env et active l'authentification "
+            "par cookies (skip le login/mdp). Le cookie manquant peut être "
+            "complété depuis .env si besoin. Doit être combiné avec "
+            "--cabinet-groupe ou avec PHPSESSID+CABINET_GROUPE dans .env."
+        ),
+    )
+    parser.add_argument(
+        "--cabinet-groupe",
+        type=str,
+        default=None,
+        metavar="VAL",
+        help=(
+            "Override la valeur CABINET_GROUPE du .env. À combiner avec "
+            "--phpsessid (ou avec PHPSESSID+CABINET_GROUPE dans .env) pour "
+            "activer le mode cookie."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -1195,7 +1405,10 @@ async def main(argv: Sequence[str] = ()) -> None:
     print("🔐 Phase 1 : Authentification")
     print("=" * 50)
 
-    session = await authenticate()
+    session = await authenticate(
+        cli_phpsessid=args.phpsessid,
+        cli_cabinet_groupe=args.cabinet_groupe,
+    )
     if not session:
         return
 
