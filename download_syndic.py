@@ -233,7 +233,17 @@ def scan_existing_files(base_folder: str) -> set[str]:
     """
     existing_files: set[str] = set()
 
-    if not os.path.exists(base_folder):
+    if not os.path.isdir(base_folder):
+        # Repr() expose les espaces / caractères invisibles qui font souvent
+        # dériver le chemin (cf. .env avec un trailing space). On ne peut pas
+        # distinguer ici "dossier inexistant" de "le chemin pointe vers un
+        # fichier", mais les deux cas produisent le même symptôme (scan vide
+        # → tout marqué nouveau), donc un seul avertissement suffit.
+        print(
+            f"⚠️  Dossier de téléchargement introuvable : {base_folder!r}\n"
+            f"   Tous les fichiers distants seront marqués comme nouveaux.\n"
+            f"   Vérifiez DOWNLOAD_FOLDER dans .env (espaces, casse, fautes de frappe)."
+        )
         return existing_files
 
     print(f"🔍 Scan des fichiers existants dans {base_folder}...")

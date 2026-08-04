@@ -16,10 +16,42 @@ import download_syndic as ds
 class TestScanExistingFiles:
     """Tests de scan_existing_files."""
 
-    def test_dossier_inexistant_retourne_set_vide(self, tmp_path) -> None:
-        # Pas de message d'erreur, pas de crash, on rend juste un set vide.
+    def test_dossier_inexistant_retourne_set_vide(self, tmp_path, capsys) -> None:
+        # Pas de crash, on rend un set vide — mais on avertit l'utilisateur
+        # pour qu'un chemin mal configuré (typo, espace final) ne passe pas
+        # inaperçu.
         result = ds.scan_existing_files(str(tmp_path / "nope"))
         assert result == set()
+        captured = capsys.readouterr()
+        assert "introuvable" in captured.out
+
+    def test_chemin_avec_espace_final_avertit(self, tmp_path, capsys) -> None:
+        # Reproduit le cas réel : DOWNLOAD_FOLDER = "../CLESEV " dans le .env
+        # → Linux voit "../CLESEV<espace>" comme un autre dossier que
+        # "../CLESEV", qui existe. Sans l'avertissement, tous les fichiers
+        # distants étaient marqués nouveaux et l'utilisateur ne comprenait
+        # pas pourquoi.
+        target = tmp_path / "CLESEV"
+        target.mkdir()
+        (target / "doc.pdf").write_bytes(b"x")
+        bad_path = str(tmp_path) + "/CLESEV "  # espace final
+        result = ds.scan_existing_files(bad_path)
+        assert result == set()
+        captured = capsys.readouterr()
+        # repr() doit exposer l'espace final pour aider le diagnostic.
+        assert repr(bad_path) in captured.out
+        assert "introuvable" in captured.out
+
+    def test_chemin_pointant_vers_un_fichier_avertit(self, tmp_path, capsys) -> None:
+        # Si DOWNLOAD_FOLDER pointe vers un fichier (et non un dossier),
+        # os.walk ne descend rien : on doit aussi avertir plutôt que scanner
+        # silencieusement un ensemble vide.
+        file_path = tmp_path / "not_a_dir"
+        file_path.write_bytes(b"x")
+        result = ds.scan_existing_files(str(file_path))
+        assert result == set()
+        captured = capsys.readouterr()
+        assert "introuvable" in captured.out
 
     def test_dossier_vide(self, tmp_path) -> None:
         result = ds.scan_existing_files(str(tmp_path))
